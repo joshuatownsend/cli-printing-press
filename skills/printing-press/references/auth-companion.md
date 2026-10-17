@@ -68,8 +68,10 @@ press-auth login <domain> \
 `<domain>` is the cookie domain (e.g., `alaskaair.com`), not a URL.
 `<login-url>` is the page where the user signs in. `<carrier>` is the cookie
 that holds the JWT for expiry tracking. `--complete-cookie` is a separate
-completion signal; pass the same name as `<carrier>` only when that cookie
-should both finish login and drive refresh.
+completion signal and replaces the sign-out heuristic; pass the same name
+as `<carrier>` only when that cookie should both finish login and drive
+refresh. `--complete-selector` also replaces the heuristic. When both are
+set, either signal finishes login.
 
 The first `press-auth login` for a given domain triggers a macOS keychain
 prompt: "press-auth wants to use your confidential information stored in the
@@ -101,7 +103,7 @@ press-auth at runtime.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "No Chrome found" | chromedp can't locate the Chrome binary. | Install Google Chrome at the default location (`/Applications/Google Chrome.app`). chromedp auto-detects from there. |
-| Login window opens, user signs in, but capture never completes (10-min timeout) | The sign-out heuristic did not match any page tab (path changed, no password field, sign-out link or button). The signed-in page may have no such control, or it may be on a tab other than the first. | Re-run with `--complete-cookie <name>` for a cookie that appears only after sign-in, or `--complete-selector` for an element that is visible after login (`a[href*=signout]`, `[data-testid=user-menu]`, `nav .account-name`). Both the heuristic and `--complete-selector` are checked on every page tab. |
+| Login window opens, user signs in, but capture never completes (10-min timeout) | No completion flag was set and the sign-out heuristic did not match any page tab (path changed, no password field, sign-out link or button). The signed-in page may have no such control, or it may be on a tab other than the first. A configured `--complete-cookie` that is still absent does not fall through to that heuristic. | Re-run with `--complete-cookie <name>` for a cookie that appears only after sign-in, or `--complete-selector` for an element that is visible after login (`a[href*=signout]`, `[data-testid=user-menu]`, `nav .account-name`). Either flag replaces the heuristic, so capture waits for that signal. `--complete-selector` is checked on every page tab. When both flags are set, either signal finishes login. |
 | `press-auth cookies <domain>` returns 401 after weeks of working | Refresh window exceeded; the underlying session is dead. | Re-run `press-auth login <domain>`. Lazy refresh only extends sessions while the carrier cookie is still refreshable. |
 | Keychain prompt repeats on every `press-auth cookies` call | User clicked "Allow" instead of "Always Allow" on the first prompt. | `press-auth forget <domain>` then `press-auth login <domain>` again. Choose **Always Allow**. |
 | `press-auth cookies` exits 5 with "refresh returned no new cookies" | Refresh endpoint responded 200 but didn't rotate the carrier cookie (some APIs only rotate on specific paths). | Verify the spec's `refresh_endpoint` is the correct path. If the API has a separate "extend session" vs "exchange token" endpoint, the spec needs the token-exchange path. |
@@ -135,12 +137,16 @@ captured over plain HTTP isn't worth storing in a keychain-protected file).
 A CSS selector that's only visible AFTER login. press-auth checks it on
 every page tab of the capture window, not only the first. When it is set,
 it replaces the generic heuristic (any page tab whose path changed, with no
-`input[type=password]`, and a sign-out link or button). The heuristic fires
-on most sites but hangs when no tab renders that control — for example an
-emailed sign-in link that opens a second tab onto a home page with no
-sign-out element. `--complete-cookie <name>` finishes login when that cookie
-exists anywhere in the capture browser, including when the heuristic and the
-selector never match.
+`input[type=password]`, and a sign-out link or button). The heuristic runs
+only when neither completion flag is set. It hangs when no tab renders that
+control — for example an emailed sign-in link that opens a second tab onto
+a home page with no sign-out element.
+
+`--complete-cookie <name>` also replaces the heuristic. Login finishes only
+when that cookie is present anywhere in the capture browser, on any host.
+A page that matches the heuristic does not finish capture while the cookie
+is still absent. When both `--complete-cookie` and the selector are set,
+either signal finishes login, and the heuristic still does not run.
 
 Good signals:
 

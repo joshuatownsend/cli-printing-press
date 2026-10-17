@@ -55,8 +55,9 @@ type CaptureOptions struct {
 
 // Capture launches a controlled Chrome window via chromedp, navigates to
 // opts.LoginURL, waits for the login flow to complete (a named
-// complete-cookie, a complete-selector on any page tab, or the sign-out
-// heuristic on any page tab), snapshots every cookie in the browser,
+// complete-cookie, a complete-selector on any page tab, or, when neither
+// flag is set, the sign-out heuristic on any page tab), snapshots every
+// cookie in the browser,
 // filters them to the target domain, and returns the resulting *State.
 // The temp user-data-dir is deleted on both success and error paths so
 // the user's daily Chrome profile is never touched.
@@ -193,11 +194,11 @@ func waitForLoginEvery(ctx context.Context, cfg loginWaitConfig, view completion
 	if interval <= 0 {
 		interval = time.Second
 	}
-	// The sign-out heuristic compares paths. Selector mode replaces that
-	// heuristic, so an unparseable login URL only matters when the heuristic
-	// can still fire.
+	// The sign-out heuristic compares paths. Either completion flag replaces
+	// that heuristic, so an unparseable login URL only matters when neither
+	// flag is set and the heuristic can still fire.
 	loginPath := ""
-	if cfg.CompleteSelector == "" {
+	if cfg.CompleteSelector == "" && cfg.CompleteCookie == "" {
 		parsed, err := url.Parse(cfg.LoginURL)
 		if err != nil {
 			return fmt.Errorf("parsing login URL: %w", err)
@@ -243,22 +244,27 @@ func completionTick(ctx context.Context, cfg loginWaitConfig, loginPath string, 
 //     browser, on any host. It does not consult the JWT carrier cookie;
 //     operators pass the same name to both flags when they want that.
 //   - A configured complete-selector finishes login when it is visible on
-//     any page tab. Selector mode does not fall through to the heuristic,
-//     matching the previous single-tab WaitVisible behavior.
+//     any page tab.
+//   - When either flag is set, the sign-out heuristic does not run. When
+//     both are set, either signal is enough.
 //   - Otherwise the sign-out heuristic finishes login when any page tab
 //     matches. A password field on one tab does not block a different tab.
 func loginComplete(cfg loginWaitConfig, loginPath string, pages []pageSignal, cookieNames map[string]struct{}) bool {
-	if cfg.CompleteCookie != "" {
+	cookieSet := cfg.CompleteCookie != ""
+	selectorSet := cfg.CompleteSelector != ""
+	if cookieSet {
 		if _, ok := cookieNames[cfg.CompleteCookie]; ok {
 			return true
 		}
 	}
-	if cfg.CompleteSelector != "" {
+	if selectorSet {
 		for _, page := range pages {
 			if page.SelectorHit {
 				return true
 			}
 		}
+	}
+	if cookieSet || selectorSet {
 		return false
 	}
 	for _, page := range pages {

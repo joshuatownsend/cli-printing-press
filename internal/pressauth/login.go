@@ -50,9 +50,10 @@ Login finishes when any of these is true:
     and a sign-out or log-out link or button is present
 
 The heuristic and --complete-selector are checked on every page tab, not
-only the first. --complete-selector replaces the heuristic. --complete-cookie
-does not replace --jwt-carrier-cookie; pass the same name to both when that
-cookie should also drive refresh.
+only the first. Setting either completion flag replaces the heuristic. When
+both are set, either signal finishes login and the heuristic does not run.
+--complete-cookie does not replace --jwt-carrier-cookie; pass the same name
+to both when that cookie should also drive refresh.
 
 Provide --refresh-endpoint and --jwt-carrier-cookie when the API issues a
 JWT session you want press-auth to refresh lazily on expiry.`,
@@ -75,7 +76,7 @@ JWT session you want press-auth to refresh lazily on expiry.`,
 
 	cmd.Flags().StringVar(&lf.LoginURL, "login-url", "", "URL press-auth opens in the controlled Chrome window for you to log in")
 	cmd.Flags().StringVar(&lf.CompleteSelector, "complete-selector", "", "CSS selector that signals login is complete; checked on every page tab and replaces the sign-out heuristic")
-	cmd.Flags().StringVar(&lf.CompleteCookie, "complete-cookie", "", "Cookie name whose presence in the capture browser means login is complete")
+	cmd.Flags().StringVar(&lf.CompleteCookie, "complete-cookie", "", "Cookie name whose presence in the capture browser means login is complete; replaces the sign-out heuristic")
 	cmd.Flags().StringVar(&lf.RefreshEndpoint, "refresh-endpoint", "", "API path press-auth GETs to refresh an expiring JWT (e.g. /account/token)")
 	cmd.Flags().StringVar(&lf.JWTCarrierCookie, "jwt-carrier-cookie", "", "Name of the cookie that holds the JWT; its exp claim drives refresh timing")
 	cmd.Flags().BoolVar(&lf.Force, "force", false, "Overwrite existing state for <domain> without prompting")
