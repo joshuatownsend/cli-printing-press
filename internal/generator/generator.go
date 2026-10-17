@@ -308,6 +308,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"oauth2AccessTokenAuth":               oauth2AccessTokenAuth,
 		"oauth2DirectBearerEnvFallback":       oauth2DirectBearerEnvFallback,
 		"oauth2AuthSource":                    oauth2AuthSource,
+		"authHeaderStampsSource":              authHeaderStampsSource,
 		"basicAuthEnvVars":                    basicAuthEnvVars,
 		"basicAuthAppendsColonForSingleToken": basicAuthAppendsColonForSingleToken,
 		"clientCredentialsEnvVars":            clientCredentialsEnvVars,
@@ -1552,6 +1553,18 @@ func oauth2AuthSource(auth spec.AuthConfig) string {
 		return spec.AuthTypeOAuth2Refresh
 	}
 	return "oauth2"
+}
+
+// authHeaderStampsSource reports whether AuthHeader records which branch
+// produced the header. That write has to be synchronized; api_key and the
+// other types that only read fields must not grow the helper.
+func authHeaderStampsSource(auth spec.AuthConfig) bool {
+	switch auth.Type {
+	case "bearer_token", "oauth2", spec.AuthTypeOAuth2Refresh, "cookie", "composed":
+		return true
+	default:
+		return false
+	}
 }
 
 func authFormatIsBasic(auth spec.AuthConfig) bool {
@@ -3664,6 +3677,11 @@ func (g *Generator) Generate() error {
 	if err := g.renderSingleFiles(); err != nil {
 		return err
 	}
+	if g.emitsConcurrentTokenRaceTest() {
+		if err := g.renderTemplate("client_token_race_test.go.tmpl", filepath.Join("internal", "client", "token_race_test.go"), g.clientTemplateData()); err != nil {
+			return err
+		}
+	}
 	if err := g.renderOptionalSupportFiles(); err != nil {
 		return err
 	}
@@ -4473,6 +4491,29 @@ func (g *Generator) shouldEmitAuth() bool {
 	return (typ != "" && typ != "none") ||
 		g.Spec.Auth.AuthorizationURL != "" ||
 		g.hasTrafficAnalysisHint("graphql_persisted_query")
+}
+
+// emitsConcurrentTokenRaceTest reports whether the printed client mints or
+// refreshes a bearer on the shared Client. The emitted test races several
+// Gets across that exchange. Google service-account exchange is a separate
+// lock, and cookie auth does not put the refreshed bearer on the request.
+func (g *Generator) emitsConcurrentTokenRaceTest() bool {
+	if g == nil || g.Spec == nil || !g.shouldEmitAuth() {
+		return false
+	}
+	auth := g.Spec.Auth
+	if strings.TrimSpace(auth.TokenURL) == "" {
+		return false
+	}
+	if auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		return false
+	}
+	switch auth.Type {
+	case "bearer_token", "oauth2", spec.AuthTypeOAuth2Refresh:
+		return true
+	default:
+		return false
+	}
 }
 
 // client.go emits mintClientCredentials — and a compile-time reference to
