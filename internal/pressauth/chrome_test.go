@@ -2,7 +2,9 @@ package pressauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -80,7 +82,7 @@ func TestFilterCookiesByDomain(t *testing.T) {
 		".other.example.test/drop-dot": "v4",
 		"/keep-empty-domain":           "v5", // empty Domain attr
 	})
-	got := filterCookies(all, "www.example.test")
+	got := filterCookies(all, "www.example.test", false)
 	if _, ok := got["keep"]; !ok {
 		t.Errorf("expected 'keep' cookie (matches .example.test)")
 	}
@@ -412,6 +414,327 @@ func snapshotTempDirs(t *testing.T) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func TestFilterCookiesIncludeSubdomains(t *testing.T) {
+	all := []*network.Cookie{
+		{Domain: ".example.com", Name: "JWT", Value: "jwt"},
+		{Domain: "example.com", Name: "session", Value: "sess"},
+		{Domain: "us2.example.com", Name: "_csrf", Value: "csrf-us"},
+		{Domain: "eu.example.com", Name: "_csrf", Value: "csrf-eu"},
+		{Domain: "US2.Example.COM", Name: "regional", Value: "r"},
+		{Domain: ".us2.example.com", Name: "scoped", Value: "no"},
+		{Domain: "api.example.com", Name: "sibling", Value: "sib"},
+		{Domain: "notexample.com", Name: "suffix", Value: "no"},
+		{Domain: "example.com.evil.net", Name: "embed", Value: "no"},
+		{Domain: "other.test", Name: "nope", Value: "x"},
+		{Domain: "", Name: "empty-domain", Value: "e"},
+		nil,
+	}
+
+	def := filterCookies(all, "example.com", false)
+	if _, ok := def["_csrf"]; ok {
+		t.Error("default filter kept host-only _csrf from a subdomain")
+	}
+	if _, ok := def["regional"]; ok {
+		t.Error("default filter kept mixed-case host-only subdomain cookie")
+	}
+	if _, ok := def["scoped"]; ok {
+		t.Error("default filter kept a domain cookie scoped to a subdomain")
+	}
+	if def["JWT"] != "jwt" || def["session"] != "sess" || def["empty-domain"] != "e" {
+		t.Errorf("default filter dropped an RFC match: %#v", def)
+	}
+	if _, ok := def["nope"]; ok {
+		t.Error("default filter kept an unrelated host")
+	}
+
+	wide := filterCookies(all, "example.com", true)
+	if wide["JWT"] != "jwt" || wide["session"] != "sess" || wide["empty-domain"] != "e" {
+		t.Errorf("opt-in filter dropped an RFC match: %#v", wide)
+	}
+	if wide["_csrf"] != "csrf-eu" {
+		t.Errorf("_csrf = %q, want last host-only subdomain value csrf-eu", wide["_csrf"])
+	}
+	if wide["regional"] != "r" {
+		t.Errorf("regional = %q, want case-insensitive subdomain match", wide["regional"])
+	}
+	if _, ok := wide["scoped"]; ok {
+		t.Error("opt-in kept a leading-dot cookie scoped only to a subdomain")
+	}
+	for _, name := range []string{"suffix", "embed", "nope"} {
+		if _, ok := wide[name]; ok {
+			t.Errorf("opt-in kept %s", name)
+		}
+	}
+
+	// The cookies command prints the stored map with no second domain filter.
+	header := formatCookieHeader(wide)
+	for _, want := range []string{"JWT=jwt", "_csrf=csrf-eu", "session=sess", "regional=r"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("stored header %q missing %s", header, want)
+		}
+	}
+	if strings.Contains(header, "nope=") || strings.Contains(header, "scoped=") {
+		t.Errorf("stored header leaked a dropped cookie: %s", header)
+	}
+
+	sibling := filterCookies(all, "www.example.com", true)
+	if _, ok := sibling["sibling"]; ok {
+		t.Error("api.example.com is not a subdomain of www.example.com")
+	}
+	dotted := filterCookies(
+		[]*network.Cookie{{Domain: "us2.example.com", Name: "_csrf", Value: "csrf"}},
+		".example.com",
+		true,
+	)
+	if dotted["_csrf"] != "csrf" {
+		t.Error("leading-dot capture target should still match a host-only subdomain cookie")
+	}
+}
+
+func TestCollectPageSignalsProbesEveryPageTab(t *testing.T) {
+	var probed []string
+	pages, err := collectPageSignals([]targetRef{
+		{ID: "browser", Type: "browser"},
+		{ID: "login", Type: pageTargetType},
+		{ID: "", Type: pageTargetType},
+		{ID: "frame", Type: "iframe"},
+		{ID: "home", Type: pageTargetType},
+		{ID: "worker", Type: "service_worker"},
+		{ID: "closed", Type: pageTargetType},
+	}, func(id string) (pageSignal, error) {
+		probed = append(probed, id)
+		switch id {
+		case "login":
+			return pageSignal{Href: "https://example.com/login", HasPassword: true}, nil
+		case "home":
+			return pageSignal{Href: "https://example.com/home", HasSignout: true}, nil
+		case "closed":
+			return pageSignal{}, errTabUnreadable
+		default:
+			t.Errorf("probed unexpected target %s", id)
+			return pageSignal{}, errTabUnreadable
+		}
+	})
+	if err != nil {
+		t.Fatalf("collectPageSignals: %v", err)
+	}
+	if strings.Join(probed, ",") != "login,home,closed" {
+		t.Fatalf("probed %v, want login, home, and the unreadable page", probed)
+	}
+	if !loginComplete(loginWaitConfig{}, "/login", pages, nil) {
+		t.Fatal("sign-out on a later tab should finish login when the first tab is still the password form")
+	}
+	if loginComplete(loginWaitConfig{}, "/login", pages[:1], nil) {
+		t.Fatal("first tab alone is still the password form and must not finish login")
+	}
+}
+
+func TestCollectPageSignalsReturnsFatalProbeError(t *testing.T) {
+	fatal := fmt.Errorf("waiting for login completion: %w", context.DeadlineExceeded)
+	_, err := collectPageSignals([]targetRef{{ID: "home", Type: pageTargetType}}, func(string) (pageSignal, error) {
+		return pageSignal{}, fatal
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline", err)
+	}
+}
+
+func TestLoginCompleteHeuristicAndSignals(t *testing.T) {
+	password := pageSignal{Href: "https://example.com/login", HasPassword: true, HasSignout: true}
+	samePath := pageSignal{Href: "https://example.com/login", HasSignout: true}
+	emailTab := pageSignal{Href: "https://example.com/check-email"}
+	signedIn := pageSignal{Href: "https://example.com/home", HasSignout: true}
+	badURL := pageSignal{Href: "://", HasSignout: true}
+
+	cases := []struct {
+		name      string
+		cfg       loginWaitConfig
+		loginPath string
+		pages     []pageSignal
+		names     map[string]struct{}
+		want      bool
+	}{
+		{name: "password blocks that tab", loginPath: "/login", pages: []pageSignal{password}, want: false},
+		{name: "sign-out on the login path", loginPath: "/login", pages: []pageSignal{samePath}, want: false},
+		{name: "sign-out off the login path", loginPath: "/login", pages: []pageSignal{signedIn}, want: true},
+		{name: "unreadable url", loginPath: "/login", pages: []pageSignal{badURL}, want: false},
+		{name: "empty login path skips the path check", pages: []pageSignal{{HasSignout: true}}, want: true},
+		{
+			name:      "second tab signed in",
+			loginPath: "/login",
+			pages:     []pageSignal{emailTab, signedIn},
+			want:      true,
+		},
+		{
+			name:      "carrier cookie is not an implicit completion signal",
+			loginPath: "/login",
+			pages:     []pageSignal{emailTab},
+			names:     map[string]struct{}{"session": {}},
+			want:      false,
+		},
+		{
+			name:      "named cookie on any host",
+			cfg:       loginWaitConfig{CompleteCookie: "_csrf"},
+			loginPath: "/login",
+			pages:     []pageSignal{emailTab},
+			names:     map[string]struct{}{"_csrf": {}},
+			want:      true,
+		},
+		{
+			name:      "named cookie missing",
+			cfg:       loginWaitConfig{CompleteCookie: "_csrf"},
+			loginPath: "/login",
+			pages:     []pageSignal{emailTab},
+			names:     map[string]struct{}{"session": {}},
+			want:      false,
+		},
+		{
+			name:      "cookie still finishes when a selector is unset on every tab",
+			cfg:       loginWaitConfig{CompleteSelector: "#account", CompleteCookie: "_csrf"},
+			loginPath: "/login",
+			pages:     []pageSignal{emailTab, {Href: "https://example.com/home"}},
+			names:     map[string]struct{}{"_csrf": {}},
+			want:      true,
+		},
+		{
+			name:      "selector on a later tab",
+			cfg:       loginWaitConfig{CompleteSelector: "#account"},
+			loginPath: "/login",
+			pages: []pageSignal{
+				{Href: "https://example.com/check-email"},
+				{Href: "https://example.com/home", SelectorHit: true},
+			},
+			want: true,
+		},
+		{
+			name:      "selector mode does not fall through to the heuristic",
+			cfg:       loginWaitConfig{CompleteSelector: "#account"},
+			loginPath: "/login",
+			pages: []pageSignal{
+				emailTab,
+				signedIn,
+			},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := loginComplete(tc.cfg, tc.loginPath, tc.pages, tc.names)
+			if got != tc.want {
+				t.Fatalf("loginComplete = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWaitForLoginSeesLaterTab(t *testing.T) {
+	view := &scriptedCompletionView{
+		pages: [][]pageSignal{
+			{{Href: "https://example.com/check-email"}},
+			{
+				{Href: "https://example.com/check-email"},
+				{Href: "https://example.com/home", HasSignout: true},
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := waitForLoginEvery(ctx, loginWaitConfig{LoginURL: "https://example.com/login"}, view, time.Millisecond); err != nil {
+		t.Fatalf("waitForLoginEvery: %v", err)
+	}
+	if view.ticks < 2 {
+		t.Fatalf("ticks = %d, want the waiter to re-read tabs", view.ticks)
+	}
+}
+
+func TestWaitForLoginCookieWithoutSignout(t *testing.T) {
+	view := &scriptedCompletionView{
+		pages: [][]pageSignal{{{Href: "https://example.com/check-email"}}},
+		names: []map[string]struct{}{{"_csrf": {}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := waitForLoginEvery(ctx, loginWaitConfig{
+		LoginURL:       "https://example.com/login",
+		CompleteCookie: "_csrf",
+	}, view, time.Hour)
+	if err != nil {
+		t.Fatalf("cookie should finish login on the first observation: %v", err)
+	}
+	if view.cookieReads != 1 {
+		t.Fatalf("cookieReads = %d, want 1", view.cookieReads)
+	}
+}
+
+func TestWaitForLoginCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := waitForLoginEvery(ctx, loginWaitConfig{LoginURL: "https://example.com/login"}, &scriptedCompletionView{
+		pages: [][]pageSignal{{{Href: "https://example.com/login", HasPassword: true}}},
+	}, time.Hour)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want canceled", err)
+	}
+}
+
+func TestCompletionProbeExprQuotesSelector(t *testing.T) {
+	selector := `a[href*="signout"]`
+	expr := completionProbeExpr(selector)
+	encoded, err := json.Marshal(selector)
+	if err != nil {
+		t.Fatalf("marshal selector: %v", err)
+	}
+	if !strings.Contains(expr, string(encoded)) {
+		t.Fatalf("selector was not embedded as a JSON string: %s", expr)
+	}
+	hostile := completionProbeExpr(`"); alert(1);//`)
+	if strings.Contains(hostile, `sel = ");`) {
+		t.Fatalf("selector broke out of the JS string: %s", hostile)
+	}
+	if !strings.Contains(hostile, `sel = "\"); alert(1);//";`) {
+		t.Fatalf("selector was not JSON-escaped: %s", hostile)
+	}
+}
+
+type scriptedCompletionView struct {
+	ticks       int
+	cookieReads int
+	pages       [][]pageSignal
+	names       []map[string]struct{}
+	pageErr     error
+	cookieErr   error
+}
+
+func (s *scriptedCompletionView) pageSignals(context.Context, string) ([]pageSignal, error) {
+	if s.pageErr != nil {
+		return nil, s.pageErr
+	}
+	idx := s.ticks
+	s.ticks++
+	if len(s.pages) == 0 {
+		return nil, nil
+	}
+	if idx >= len(s.pages) {
+		idx = len(s.pages) - 1
+	}
+	return s.pages[idx], nil
+}
+
+func (s *scriptedCompletionView) cookieNames(context.Context) (map[string]struct{}, error) {
+	s.cookieReads++
+	if s.cookieErr != nil {
+		return nil, s.cookieErr
+	}
+	if len(s.names) == 0 {
+		return nil, nil
+	}
+	idx := s.cookieReads - 1
+	if idx >= len(s.names) {
+		idx = len(s.names) - 1
+	}
+	return s.names[idx], nil
 }
 
 func leakedTempDir(t *testing.T, before map[string]struct{}) bool {

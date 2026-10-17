@@ -61,12 +61,19 @@ press-auth login <domain> \
   --login-url <login-url> \
   --jwt-carrier-cookie <carrier> \
   [--complete-selector <selector>] \
+  [--complete-cookie <name>] \
+  [--include-subdomains] \
   [--refresh-endpoint <path>]
 ```
 
 `<domain>` is the cookie domain (e.g., `alaskaair.com`), not a URL.
 `<login-url>` is the page where the user signs in. `<carrier>` is the cookie
-that holds the JWT for expiry tracking.
+that holds the JWT for expiry tracking. `--complete-cookie` is a separate
+completion signal; pass the same name as `<carrier>` only when that cookie
+should both finish login and drive refresh. `--include-subdomains` keeps
+host-only cookies set on subdomains of `<domain>`. Leave it off unless a
+required cookie is host-only on a subdomain — the default is RFC 6265
+matching, and `press-auth cookies` prints whatever the capture stored.
 
 The first `press-auth login` for a given domain triggers a macOS keychain
 prompt: "press-auth wants to use your confidential information stored in the
@@ -98,7 +105,8 @@ press-auth at runtime.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "No Chrome found" | chromedp can't locate the Chrome binary. | Install Google Chrome at the default location (`/Applications/Google Chrome.app`). chromedp auto-detects from there. |
-| Login window opens, user signs in, but capture never completes (10-min timeout) | Heuristic completion check (URL-changed + no password input + signout link present) didn't match the post-login DOM. | Re-run `press-auth login <domain>` with an explicit `--complete-selector` pointing at an element that only appears after login: `a[href*=signout]`, `[data-testid=user-menu]`, `nav .account-name`. |
+| Login window opens, user signs in, but capture never completes (10-min timeout) | The sign-out heuristic did not match any page tab (path changed, no password field, sign-out link or button). The signed-in page may have no such control, or it may be on a tab other than the first. | Re-run with `--complete-cookie <name>` for a cookie that appears only after sign-in, or `--complete-selector` for an element that is visible after login (`a[href*=signout]`, `[data-testid=user-menu]`, `nav .account-name`). Both the heuristic and `--complete-selector` are checked on every page tab. |
+| A required cookie is missing after an apex-domain capture (`cookie "<name>" not found`) | The cookie is host-only on a subdomain, and the default RFC 6265 filter keeps a host-only cookie only when its host equals `<domain>`. | Re-run `press-auth login <domain> --login-url <login-url> --include-subdomains`. `press-auth cookies <domain>` then prints the stored cookies, including that host-only subdomain cookie. |
 | `press-auth cookies <domain>` returns 401 after weeks of working | Refresh window exceeded; the underlying session is dead. | Re-run `press-auth login <domain>`. Lazy refresh only extends sessions while the carrier cookie is still refreshable. |
 | Keychain prompt repeats on every `press-auth cookies` call | User clicked "Allow" instead of "Always Allow" on the first prompt. | `press-auth forget <domain>` then `press-auth login <domain>` again. Choose **Always Allow**. |
 | `press-auth cookies` exits 5 with "refresh returned no new cookies" | Refresh endpoint responded 200 but didn't rotate the carrier cookie (some APIs only rotate on specific paths). | Verify the spec's `refresh_endpoint` is the correct path. If the API has a separate "extend session" vs "exchange token" endpoint, the spec needs the token-exchange path. |
@@ -129,10 +137,15 @@ captured over plain HTTP isn't worth storing in a keychain-protected file).
 
 ### `login_complete_selector` (optional but strongly recommended)
 
-A CSS selector that's only visible AFTER login. Without it, press-auth uses
-a generic heuristic (URL changed + no `input[type=password]` + signout link
-present), which fires reliably on most sites but can hang on SPAs with
-client-side post-login redirects.
+A CSS selector that's only visible AFTER login. press-auth checks it on
+every page tab of the capture window, not only the first. When it is set,
+it replaces the generic heuristic (any page tab whose path changed, with no
+`input[type=password]`, and a sign-out link or button). The heuristic fires
+on most sites but hangs when no tab renders that control — for example an
+emailed sign-in link that opens a second tab onto a home page with no
+sign-out element. `--complete-cookie <name>` finishes login when that cookie
+exists anywhere in the capture browser, including when the heuristic and the
+selector never match.
 
 Good signals:
 
