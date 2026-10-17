@@ -13545,8 +13545,6 @@ func TestGenerate_CookieAuthFiltersAllowlistOnLogin(t *testing.T) {
 		assert.Contains(t, content, "cookieMap := parseCookieString(cookies)")
 		assert.Contains(t, content, `cookies = strings.Join(kept, "; ")`)
 		assert.Contains(t, content, `cookie %q not found for %s`)
-		assert.Contains(t, content, "hostOnlySubdomainRecapture")
-		assert.Contains(t, content, "--include-subdomains")
 
 		runGoCommand(t, outputDir, "build", "./...")
 	})
@@ -14001,8 +13999,6 @@ func TestGenerate_ComposedAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "validateComposedAuthProbe(composed, validationCookies, !skipValidation)")
 	assert.NotContains(t, content, "host_key LIKE")
 	assert.Contains(t, content, "printMissingCookieHint")
-	assert.Contains(t, content, "hostOnlySubdomainRecapture")
-	assert.Contains(t, content, "--include-subdomains")
 	assert.Contains(t, content, "required cookies present")
 	assert.NotContains(t, content, "case 0:")
 	assert.NotContains(t, content, `profileDir != "" && profileDir != "Default"`)

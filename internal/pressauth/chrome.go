@@ -44,23 +44,22 @@ var errTabUnreadable = errors.New("tab unreadable")
 // chromedp launcher. Domain is the target the captured cookies will be
 // stored under; LoginURL is what the controlled window first navigates to.
 type CaptureOptions struct {
-	Domain            string
-	LoginURL          string
-	CompleteSelector  string
-	CompleteCookie    string
-	IncludeSubdomains bool
-	RefreshEndpoint   string
-	JWTCarrierCookie  string
-	Timeout           time.Duration
+	Domain           string
+	LoginURL         string
+	CompleteSelector string
+	CompleteCookie   string
+	RefreshEndpoint  string
+	JWTCarrierCookie string
+	Timeout          time.Duration
 }
 
 // Capture launches a controlled Chrome window via chromedp, navigates to
-// opts.LoginURL, waits for the login flow to complete (either an explicit
-// CompleteSelector becoming visible or the built-in heuristic firing),
-// snapshots every cookie in the browser, filters them to the target
-// domain, and returns the resulting *State. The temp user-data-dir is
-// deleted on both success and error paths so the user's daily Chrome
-// profile is never touched.
+// opts.LoginURL, waits for the login flow to complete (a named
+// complete-cookie, a complete-selector on any page tab, or the sign-out
+// heuristic on any page tab), snapshots every cookie in the browser,
+// filters them to the target domain, and returns the resulting *State.
+// The temp user-data-dir is deleted on both success and error paths so
+// the user's daily Chrome profile is never touched.
 //
 // Capture does not write to disk. The caller is responsible for handing
 // the returned State to Save once it confirms the capture succeeded.
@@ -123,7 +122,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (*State, error) {
 		return nil, classifyChromeErr("snapshot cookies", err)
 	}
 
-	filtered := filterCookies(cookies, opts.Domain, opts.IncludeSubdomains)
+	filtered := filterCookies(cookies, opts.Domain)
 	var jwtExpiry time.Time
 	if opts.JWTCarrierCookie != "" {
 		if token, err := ExtractJWT(filtered[opts.JWTCarrierCookie]); err == nil {
@@ -462,42 +461,15 @@ func snapshotCookies(ctx context.Context) ([]*network.Cookie, error) {
 // map for the cookies whose Domain attribute matches the target. Values
 // are never logged; the only place they should reach is the encrypted
 // state blob.
-func filterCookies(all []*network.Cookie, target string, includeSubdomains bool) map[string]string {
+func filterCookies(all []*network.Cookie, target string) map[string]string {
 	out := make(map[string]string, len(all))
 	for _, c := range all {
-		if c == nil || !cookieIncluded(c.Domain, target, includeSubdomains) {
+		if c == nil || !cookieDomainMatches(c.Domain, target) {
 			continue
 		}
 		out[c.Name] = c.Value
 	}
 	return out
-}
-
-// cookieIncluded keeps RFC 6265 matches always. includeSubdomains adds
-// host-only cookies whose host is a strict subdomain of target. Domain
-// cookies (leading dot) stay on the RFC path so the opt-in does not widen
-// a cookie that was scoped to some other site.
-func cookieIncluded(cookieDomain, target string, includeSubdomains bool) bool {
-	if cookieDomainMatches(cookieDomain, target) {
-		return true
-	}
-	return includeSubdomains && hostOnlySubdomainCookie(cookieDomain, target)
-}
-
-// hostOnlySubdomainCookie reports whether cookieDomain is a host-only cookie
-// set on a strict subdomain of target. A leading dot means the cookie is a
-// domain cookie, which cookieDomainMatches already handles.
-func hostOnlySubdomainCookie(cookieDomain, target string) bool {
-	cookieDomain = strings.ToLower(strings.TrimSpace(cookieDomain))
-	target = strings.ToLower(strings.TrimSpace(target))
-	if cookieDomain == "" || target == "" || strings.HasPrefix(cookieDomain, ".") {
-		return false
-	}
-	target = strings.TrimPrefix(target, ".")
-	if target == "" || cookieDomain == target {
-		return false
-	}
-	return strings.HasSuffix(cookieDomain, "."+target)
 }
 
 // cookieDomainMatches applies RFC 6265 §5.1.3 domain matching:

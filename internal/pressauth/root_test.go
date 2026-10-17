@@ -43,33 +43,17 @@ func TestLoginHelpListsExpectedFlags(t *testing.T) {
 		t.Fatalf("login --help should exit cleanly, got: %v", err)
 	}
 
-	wantFlags := []string{"--login-url", "--complete-selector", "--complete-cookie", "--include-subdomains", "--refresh-endpoint", "--jwt-carrier-cookie", "--force"}
+	wantFlags := []string{"--login-url", "--complete-selector", "--complete-cookie", "--refresh-endpoint", "--jwt-carrier-cookie", "--force"}
 	for _, flag := range wantFlags {
 		if !strings.Contains(stdout, flag) {
 			t.Errorf("login --help output missing flag %q; got:\n%s", flag, stdout)
 		}
 	}
-	for _, phrase := range []string{"every page tab", "host-only", "RFC 6265"} {
-		if !strings.Contains(stdout, phrase) {
-			t.Errorf("login --help output missing %q; got:\n%s", phrase, stdout)
-		}
+	if !strings.Contains(stdout, "every page tab") {
+		t.Errorf("login --help output missing %q; got:\n%s", "every page tab", stdout)
 	}
-}
-
-func TestNoMatchedCookiesErrorMentionsSubdomains(t *testing.T) {
-	err := noMatchedCookiesError("example.com", false)
-	var exitErr *ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *ExitError, got %T", err)
-	}
-	if exitErr.Code != ExitNoNewCookies {
-		t.Errorf("Code = %d, want ExitNoNewCookies", exitErr.Code)
-	}
-	if !strings.Contains(err.Error(), "--include-subdomains") {
-		t.Errorf("default miss should mention --include-subdomains, got: %v", err)
-	}
-	if strings.Contains(noMatchedCookiesError("example.com", true).Error(), "--include-subdomains") {
-		t.Error("error should not repeat --include-subdomains when the flag was already set")
+	if strings.Contains(stdout, "--include-subdomains") {
+		t.Errorf("login --help should not offer --include-subdomains; got:\n%s", stdout)
 	}
 }
 

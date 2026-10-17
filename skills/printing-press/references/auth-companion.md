@@ -62,7 +62,6 @@ press-auth login <domain> \
   --jwt-carrier-cookie <carrier> \
   [--complete-selector <selector>] \
   [--complete-cookie <name>] \
-  [--include-subdomains] \
   [--refresh-endpoint <path>]
 ```
 
@@ -70,10 +69,7 @@ press-auth login <domain> \
 `<login-url>` is the page where the user signs in. `<carrier>` is the cookie
 that holds the JWT for expiry tracking. `--complete-cookie` is a separate
 completion signal; pass the same name as `<carrier>` only when that cookie
-should both finish login and drive refresh. `--include-subdomains` keeps
-host-only cookies set on subdomains of `<domain>`. Leave it off unless a
-required cookie is host-only on a subdomain — the default is RFC 6265
-matching, and `press-auth cookies` prints whatever the capture stored.
+should both finish login and drive refresh.
 
 The first `press-auth login` for a given domain triggers a macOS keychain
 prompt: "press-auth wants to use your confidential information stored in the
@@ -106,7 +102,6 @@ press-auth at runtime.
 |---------|-------|-----|
 | "No Chrome found" | chromedp can't locate the Chrome binary. | Install Google Chrome at the default location (`/Applications/Google Chrome.app`). chromedp auto-detects from there. |
 | Login window opens, user signs in, but capture never completes (10-min timeout) | The sign-out heuristic did not match any page tab (path changed, no password field, sign-out link or button). The signed-in page may have no such control, or it may be on a tab other than the first. | Re-run with `--complete-cookie <name>` for a cookie that appears only after sign-in, or `--complete-selector` for an element that is visible after login (`a[href*=signout]`, `[data-testid=user-menu]`, `nav .account-name`). Both the heuristic and `--complete-selector` are checked on every page tab. |
-| A required cookie is missing after an apex-domain capture (`cookie "<name>" not found`) | The cookie is host-only on a subdomain, and the default RFC 6265 filter keeps a host-only cookie only when its host equals `<domain>`. | Re-run `press-auth login <domain> --login-url <login-url> --include-subdomains`. `press-auth cookies <domain>` then prints the stored cookies, including that host-only subdomain cookie. |
 | `press-auth cookies <domain>` returns 401 after weeks of working | Refresh window exceeded; the underlying session is dead. | Re-run `press-auth login <domain>`. Lazy refresh only extends sessions while the carrier cookie is still refreshable. |
 | Keychain prompt repeats on every `press-auth cookies` call | User clicked "Allow" instead of "Always Allow" on the first prompt. | `press-auth forget <domain>` then `press-auth login <domain>` again. Choose **Always Allow**. |
 | `press-auth cookies` exits 5 with "refresh returned no new cookies" | Refresh endpoint responded 200 but didn't rotate the carrier cookie (some APIs only rotate on specific paths). | Verify the spec's `refresh_endpoint` is the correct path. If the API has a separate "extend session" vs "exchange token" endpoint, the spec needs the token-exchange path. |

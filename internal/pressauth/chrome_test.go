@@ -82,7 +82,7 @@ func TestFilterCookiesByDomain(t *testing.T) {
 		".other.example.test/drop-dot": "v4",
 		"/keep-empty-domain":           "v5", // empty Domain attr
 	})
-	got := filterCookies(all, "www.example.test", false)
+	got := filterCookies(all, "www.example.test")
 	if _, ok := got["keep"]; !ok {
 		t.Errorf("expected 'keep' cookie (matches .example.test)")
 	}
@@ -414,83 +414,6 @@ func snapshotTempDirs(t *testing.T) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func TestFilterCookiesIncludeSubdomains(t *testing.T) {
-	all := []*network.Cookie{
-		{Domain: ".example.com", Name: "JWT", Value: "jwt"},
-		{Domain: "example.com", Name: "session", Value: "sess"},
-		{Domain: "us2.example.com", Name: "_csrf", Value: "csrf-us"},
-		{Domain: "eu.example.com", Name: "_csrf", Value: "csrf-eu"},
-		{Domain: "US2.Example.COM", Name: "regional", Value: "r"},
-		{Domain: ".us2.example.com", Name: "scoped", Value: "no"},
-		{Domain: "api.example.com", Name: "sibling", Value: "sib"},
-		{Domain: "notexample.com", Name: "suffix", Value: "no"},
-		{Domain: "example.com.evil.net", Name: "embed", Value: "no"},
-		{Domain: "other.test", Name: "nope", Value: "x"},
-		{Domain: "", Name: "empty-domain", Value: "e"},
-		nil,
-	}
-
-	def := filterCookies(all, "example.com", false)
-	if _, ok := def["_csrf"]; ok {
-		t.Error("default filter kept host-only _csrf from a subdomain")
-	}
-	if _, ok := def["regional"]; ok {
-		t.Error("default filter kept mixed-case host-only subdomain cookie")
-	}
-	if _, ok := def["scoped"]; ok {
-		t.Error("default filter kept a domain cookie scoped to a subdomain")
-	}
-	if def["JWT"] != "jwt" || def["session"] != "sess" || def["empty-domain"] != "e" {
-		t.Errorf("default filter dropped an RFC match: %#v", def)
-	}
-	if _, ok := def["nope"]; ok {
-		t.Error("default filter kept an unrelated host")
-	}
-
-	wide := filterCookies(all, "example.com", true)
-	if wide["JWT"] != "jwt" || wide["session"] != "sess" || wide["empty-domain"] != "e" {
-		t.Errorf("opt-in filter dropped an RFC match: %#v", wide)
-	}
-	if wide["_csrf"] != "csrf-eu" {
-		t.Errorf("_csrf = %q, want last host-only subdomain value csrf-eu", wide["_csrf"])
-	}
-	if wide["regional"] != "r" {
-		t.Errorf("regional = %q, want case-insensitive subdomain match", wide["regional"])
-	}
-	if _, ok := wide["scoped"]; ok {
-		t.Error("opt-in kept a leading-dot cookie scoped only to a subdomain")
-	}
-	for _, name := range []string{"suffix", "embed", "nope"} {
-		if _, ok := wide[name]; ok {
-			t.Errorf("opt-in kept %s", name)
-		}
-	}
-
-	// The cookies command prints the stored map with no second domain filter.
-	header := formatCookieHeader(wide)
-	for _, want := range []string{"JWT=jwt", "_csrf=csrf-eu", "session=sess", "regional=r"} {
-		if !strings.Contains(header, want) {
-			t.Errorf("stored header %q missing %s", header, want)
-		}
-	}
-	if strings.Contains(header, "nope=") || strings.Contains(header, "scoped=") {
-		t.Errorf("stored header leaked a dropped cookie: %s", header)
-	}
-
-	sibling := filterCookies(all, "www.example.com", true)
-	if _, ok := sibling["sibling"]; ok {
-		t.Error("api.example.com is not a subdomain of www.example.com")
-	}
-	dotted := filterCookies(
-		[]*network.Cookie{{Domain: "us2.example.com", Name: "_csrf", Value: "csrf"}},
-		".example.com",
-		true,
-	)
-	if dotted["_csrf"] != "csrf" {
-		t.Error("leading-dot capture target should still match a host-only subdomain cookie")
-	}
 }
 
 func TestCollectPageSignalsProbesEveryPageTab(t *testing.T) {
